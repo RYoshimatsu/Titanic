@@ -1,0 +1,1066 @@
+---
+title: "Titanic"
+author: "Ryuta Yoshimatsu"
+output:
+  html_document: 
+    number_sections: true
+    toc: true
+    toc_depth: 3
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Load Libraries
+
+```{r packages, message = FALSE}
+library(statsr)
+library(dplyr)
+library(MASS)
+library(BAS)
+library(ggplot2)
+library(devtools)
+library(gridExtra)
+library(grid)
+library(GGally)
+library(PreProcess)
+library(tidyverse)
+library(knitr)
+```
+
+# First Look at the Data
+
+```{r load, message = FALSE}
+train <- read.csv("train.csv")
+test <- read.csv("test.csv")
+```
+
+```{r}
+str(train)
+```
+
+```{r}
+str(test)
+```
+
+Let's first take a look into the structure and the dimension of the data set.
+
+```{r}
+# Drop the label from train and combine the two data sets
+test$Survived <- NA
+all <- rbind(train, test)
+y_train <- train %>% dplyr::select(PassengerId, Survived)
+```
+
+```{r}
+# Split the data set into numerical and non-numerical variables
+numerical <- all %>% select_if(is.numeric)
+categorical <- all %>% select_if(negate(is.numeric))
+colnames(numerical)
+colnames(categorical)
+```
+
+There are **1,309 rows** with **11 columns** in the data set including `train` (**891**), `test` (**418**), of which **6 are numerical** and **5 are categorical**.
+
+**Response Variable**
+
+We first take a look into our response variable **`Survived`** in `train` data set. We convert `Survived` to a factor column.
+
+```{r}
+train$Survived <- as.factor(train$Survived)
+```
+
+```{r, fig.width=4, fig.height=4}
+ggplot(train, aes(Survived)) + geom_bar(alpha=0.5, fill='blue') + geom_label(stat = "count", aes(label = ..count.., y = ..count..), size=3)
+```
+
+Out of 891 passengers, 549 (62%) died and 342 (38%) survived.
+
+**Mosaic**
+
+A mosaic plot is a graphical display of the cell frequencies of a contingency table in which the area of boxes of the plot are proportional to the cell frequencies of the contingency table.
+
+The colors represent the level of the residual for that cell / combination of levels. More specifically, blue means there are more observations in that cell than would be expected under the null model (independence). Red means there are fewer observations than would have been expected.
+
+```{r, fig.width=7.5, fig.width=7.5}
+library(vcd)
+mosaic(~ Pclass + Sex + Survived, data=train, shade=TRUE, legend=TRUE)
+```
+
+**Duplicates**
+
+There are no duplicates
+
+```{r}
+sum(duplicated(all))
+```
+
+**Completeness**
+
+We evaluate the **completeness** of the data set.
+
+```{r}
+# Show all columns with NA values in train data set
+nacolumn <- which(colSums(is.na(train)) > 0)
+sort(colSums(sapply(train[nacolumn], is.na)), decreasing=TRUE)
+```
+
+There are 177 entries in `train` which are missing `Age`.
+
+```{r}
+# Show all columns with NA values in test data set
+nacolumn <- which(colSums(is.na(test)) > 0)
+sort(colSums(sapply(test[nacolumn], is.na)), decreasing=TRUE)
+```
+
+86 entries in `test` are missing `Age` and 1 entry is missing `Fare`.
+
+**Missing Values**
+
+**`Age`**
+
+Maybe it's better to drop the entries with NA values in `Age`. The rule of sum for using a statistical imputation on a column with missing values is that the proportion of missing values in under 5%. In this case, we have about to 15% entries with missing `Age`. 
+
+```{r, fig.width=12, fig.height=4}
+library(mice)
+h1 <- ggplot(na.omit(all), aes(Age)) + geom_histogram(data=subset(na.omit(all), Sex=='male'), bins=30, aes(fill="blue"), alpha=0.2) + geom_histogram(data=subset(na.omit(all), Sex=='female'), bins=30, aes(fill="red"), alpha=0.2) + ggtitle('Distribution Before Imputation') + scale_fill_manual(name="group", values=c("red","blue"),labels=c("Died", "Survived"))
+
+# Stochastic regression imputation on column Age
+set.seed(1)
+imp_df <- data.frame(is.na(all))
+imp_df$Fare <- FALSE
+imp_df <- imp_df %>% dplyr::select(-Survived)
+imp <- mice(all[-2], method="norm.nob", m=1, where=imp_df)
+all$Age <- complete(imp)$Age
+
+# Setting the minimum boundary for Age at 0
+all$Age[all$Age < 0] <- 0
+
+h2 <- ggplot(na.omit(all), aes(Age)) + geom_histogram(data=subset(na.omit(all), Sex=='male'), bins=30, aes(fill="blue"), alpha=0.2) + geom_histogram(data=subset(na.omit(all), Sex=='female'), bins=30, aes(fill="red"), alpha=0.2) + ggtitle('Distribution After Imputation') + scale_fill_manual(name="group", values=c("red","blue"),labels=c("Died", "Survived"))
+
+grid.arrange(
+  h1, h2,
+  nrow=1,
+  bottom = textGrob(
+    "",
+    gp=gpar(fontface=3, fontsize=9),
+    hjust=1,
+    x=1
+  )
+)
+```
+
+**`Fare`**
+
+We impute the missing `Fare` value in `test`.
+
+```{r}
+all %>% filter(PassengerId==1044)
+# We provide the median/mean value of a male single passenger who embarked at Southampton on the 3rd class
+male_single_southamplton <- all %>% filter(Sex=='male' & SibSp==0 & Parch==0 & Pclass==3 & Embarked=='S') %>% dplyr::select(Fare)
+median <- median(male_single_southamplton$Fare, na.rm=TRUE)
+ggplot(fare_male_single_southamplton, aes(Fare)) + geom_density(alpha = 0.75, color='blue', fill='blue') + geom_vline(aes(xintercept=median),linetype='dashed')
+all$Fare[is.na(all$Fare)] <- median
+all %>% filter(PassengerId==1044)
+```
+
+There are 15 entries in `train` (18 in `all`) with `Fair` 0. This seems unrealistic but we keep them as they are for now. 
+
+```{r, fig.width=5, fig.height=3.5}
+ggplot(na.omit(all), aes(Fare)) + geom_histogram(bins=30, fill='blue', alpha=0.5)
+all %>% filter(Fare==0)
+```
+
+**`Pclass`, `SibSp`, `Parch`, `Sex` and `Embarked`**
+
+```{r,  fig.width=8, fig.height=8}
+b1 <- ggplot(all, aes(Pclass)) + geom_bar(alpha=0.5,fill='blue')
+b2 <- ggplot(all, aes(SibSp)) + geom_bar(alpha=0.5,fill='blue')
+b3 <- ggplot(all, aes(Parch)) + geom_bar(alpha=0.5,fill='blue')
+b4 <- ggplot(all, aes(Sex)) + geom_bar(alpha=0.5,fill='blue')
+b5 <- ggplot(all, aes(Embarked)) + geom_bar(alpha=0.5,fill='blue')
+grid.arrange(
+  b1, b2, b3, b4, b5,
+  nrow=3,
+  bottom = textGrob(
+    "",
+    gp = gpar(fontface=3, fontsize=9),
+    hjust=1,
+    x=1
+  )
+)
+```
+
+There are 2 entries (`PassengerId` = 62 and 830) in `train` missing `Embarked`. We drop these entries.
+
+```{r}
+all %>% dplyr::group_by(Embarked) %>% dplyr::summarise(n=n())
+all %>% dplyr::filter(Embarked == '')
+
+# Remove two rows from all
+all <- all %>% filter(Embarked != '')
+y_train <- y_train %>% filter(PassengerId != 62 & PassengerId != 830)
+```
+
+**`Name`**
+
+`Name` is unique except for `Connolly, Miss. Kate` and `Kelly, Mr. James`. Each of these names has 2 entries in the data set. Since they are relatively common names and other column values look different enough, we consider them as different passengers. 
+
+```{r}
+length(all$Name)
+length(unique(all$Name))
+all %>% group_by(Name) %>% dplyr::summarise(n=n()) %>% filter(n>1)
+all %>% filter(Name=='Connolly, Miss. Kate' | Name=='Kelly, Mr. James') %>% arrange(Name)
+```
+
+**`Ticket`**
+
+`Ticket` values are not unique. Some families/passengers shared the same ticket.
+
+```{r}
+length(unique(all$Ticket))
+all %>% group_by(Ticket) %>% dplyr::summarise(n=n()) %>% filter(n>1) %>% arrange(desc(n)) %>% head()
+#train %>% filter(Ticket=='CA. 2343')
+#train %>% filter(Ticket=='1601')
+#train %>% filter(Ticket=='CA 2144')
+#train %>% filter(Ticket=='3101295')
+#train %>% filter(Ticket=='347077')
+#train %>% filter(Ticket=='347082')
+```
+
+**`Cabin`**
+
+```{r}
+all %>% group_by(Cabin) %>% dplyr::summarise(n=n()) %>% arrange(desc(n)) %>% head()
+all %>% filter(Cabin != '') %>% head()
+```
+
+There are 1014 entries with missing `Cabin`.
+
+# Exploratory Data Analysis
+
+**Correlations**
+
+**`Survived` vs `PassengerId`**
+
+```{r, fig.width=7.5, fig.height==5}
+b1 <- ggplot(aes(x=Survived, y=PassengerId), data=na.omit(train)) + geom_boxplot(alpha=0.25, fill='blue', color='blue') +  xlab("Survived")
+h1 <- ggplot(na.omit(train), aes(PassengerId)) + geom_histogram(data=subset(na.omit(train), Survived==1), bins=30, aes(fill="blue"), alpha=0.2) + geom_histogram(data=subset(na.omit(train), Survived==0), bins=30, aes(fill="red"), alpha=0.2) + scale_fill_manual(name="group", values=c("blue", "red"), labels=c("Survived", "Died"))
+grid.arrange(
+  widths = c(0.75, 1.5),
+  layout_matrix = rbind(c(1, 2)),
+  b1, h1,
+  nrow=1,
+  bottom=textGrob(
+    "",
+    gp=gpar(fontface=3, fontsize=9),
+    hjust=1,
+    x=1
+  )
+)
+lm_passengerid_survived = lm(PassengerId ~ Survived, data=na.omit(train))
+anova(lm_passengerid_survived)
+```
+
+The box plot and the ANOVA output indicates that `PassengerId` has no strong correlation with `Survived`.
+
+**`Survived` vs. Numerical Variables (`Age`, `Fare`)**
+
+```{r, fig.width=7.5, fig.height=6.5}
+b1 <- ggplot(aes(x=Survived, y=Age), data=na.omit(train)) + geom_boxplot(alpha=0.25, fill='blue', color='blue') +  xlab("Survived")
+b2 <- ggplot(aes(x=Survived, y=Fare), data=na.omit(train)) + geom_boxplot(alpha=0.25, fill='blue', color='blue') +  xlab("Survived")
+h1 <- ggplot(na.omit(train), aes(Age)) + geom_histogram(data=subset(na.omit(train), Survived==1), bins=30, aes(fill="blue"), alpha=0.2) + geom_histogram(data=subset(na.omit(train), Survived==0), bins=30, aes(fill="red"), alpha=0.2) + scale_fill_manual(name="group", values=c("blue", "red"), labels=c("Survived", "Died"))
+h2 <- ggplot(na.omit(train), aes(Fare)) + geom_histogram(data=subset(na.omit(train), Survived==1), bins=30, aes(fill="blue"), alpha=0.2) + geom_histogram(data=subset(na.omit(train), Survived==0), bins=30, aes(fill="red"), alpha=0.2) + scale_fill_manual(name="group", values=c("blue", "red"), labels=c("Survived", "Died"))
+
+grid.arrange(
+  widths = c(0.75, 1),
+  layout_matrix = rbind(c(1, 2), c(3, 4)),
+  b1, h1, b2, h2,
+  nrow = 2,
+  bottom = textGrob(
+    "",
+    gp = gpar(fontface = 3, fontsize = 9),
+    hjust = 1,
+    x = 1
+  )
+)
+
+lm_age_survived = lm(Age ~ Survived, data=na.omit(train))
+anova(lm_age_survived)
+
+lm_fare_survived = lm(Fare ~ Survived, data=na.omit(train))
+anova(lm_fare_survived)
+```
+
+The outputs of the ANOVA analysis suggest that there are statistically significant differences in the means of `age` and `fare` of those who survived and did not (especially `Fare`). Next, we look into the correlations between the two continuous variables `Fare` and `Age` to evalutate their multicollinearity.
+
+```{r, fig.width=4.5, fig.height=3.5, message=FALSE, warning=FALSE}
+ggplot(na.omit(all), aes(x=Fare, y=Age)) + geom_point(alpha=0.75)+ geom_smooth(method=loess, fill="red", color="red") + geom_smooth(method=lm, fill="blue", color="blue")
+lm_age_fare = lm(Age ~ Fare, data=na.omit(train))
+summary(lm_age_fare)$r.squared
+```
+
+The R squared 0.009228809 suggests a weak to non-existing correlation between the two variables.
+
+**`Survived` vs. Categorical Variables `Pclass`, `Sex`, `SibSp`, `Parch`, `Embarked`**
+
+We first convert the following three variables into factor columns: `Pclass`, `SibSp` and `Parch`.
+
+```{r}
+all$Pclass <- as.factor(all$Pclass)
+all$Ticket <- as.factor(all$Ticket)
+all$Sex <- as.factor(all$Sex)
+all$SibSp <- as.factor(all$SibSp)
+all$Parch <- as.factor(all$Parch)
+all$Embarked <- as.factor(all$Embarked)
+
+train$Pclass <- as.factor(train$Pclass)
+train$Ticket <- as.factor(train$Ticket)
+train$Sex <- as.factor(train$Sex)
+train$SibSp <- as.factor(train$SibSp)
+train$Parch <- as.factor(train$Parch)
+train$Embarked <- as.factor(train$Embarked)
+```
+
+We run pairwise **chi-square tests** for all combinations of the variables (`Survived`, `Pclass`, `Sex`, `SibSp`, `Parch`, `Embarked`) to evaluate the strength of correlation.
+
+```{r, message=FALSE, warning=FALSE}
+# Run chi-square test for all  of categorical variables
+library(plyr)
+chi_df <- train %>% dplyr::select(Survived, Pclass, Sex, SibSp, Parch, Embarked)
+chi_df <- droplevels(chi_df)
+combos <- combn(ncol(chi_df), 2)
+corelations <- adply(combos, 2, function(x) {
+  column_one <- names(chi_df)[x[1]]
+  column_two <- names(chi_df)[x[2]]
+  mydata <- data.frame(chi_df[, x[1]], chi_df[, x[2]])
+  mytab <- table(mydata)
+  test <- chisq.test(mytab)
+  out <- data.frame('Column.A' = column_one,
+                    'Column.B' = column_two,
+                    'p.value' = test$p.value)
+  return(out)
+})
+
+# Correlation between `Survived` and `Pclass`, `Sex`, `SibSp`, `Parch`, `Embarked`
+corelations %>% filter(Column.A == 'Survived') %>% arrange(p.value)
+# Correlation between `Pclass`, `Sex`, `SibSp`, `Parch`, `Embarked`
+corelations %>% filter(Column.A != 'Survived') %>% arrange(p.value)
+```
+
+**Chi-square tests** of independence show strong dependencies between `Survived` and variables (`Sex`, `Pclass`, `SibSp`, `Embarked`, `Parch`) and between (`Sex`,`Parch`), (`Sex`,`SibSp`), (`Sex`,`Embarked`), (`Sex`, `Pclass`), (`Pclass`,`Embarked`), (`Pclass`,`SibSp`) and (`SibSp`,`Parch`).
+
+**Contingency Tables**
+
+```{r, warning=FALSE}
+# (Survived, Sex)
+mosaicplot(~ train$Survived+train$Sex, data=train, shade=TRUE, legend=TRUE, xlab='Survived', ylab='Sex', main='')
+# (Survived, Pclass)
+mosaicplot(~ train$Survived+train$Pclass, data=train, shade=TRUE, legend=TRUE, xlab='Survived', ylab='Pclass', main='')
+# (Survived, SibSp)
+mosaicplot(~ train$Survived+train$SibSp, data=train, shade=TRUE, legend=TRUE, xlab='Survived', ylab='SibSp', main='')
+# (Survived, Embarked)
+mosaicplot(~ train$Survived+train$Embarked, data=train, shade=TRUE, legend=TRUE, xlab='Survived', ylab='Embarked', main='')
+# (Survived, Parch)
+mosaicplot(~ train$Survived+train$Parch, data=train, shade=TRUE, legend=TRUE, xlab='Survived', ylab='Parch', main='')
+```
+
+Female passenger survival rate is a lot higher than the null hypothesis, where we assume there is difference in the survival rates between female and male passengers. 1st class passengers' survival rate is significantly higher than that of the 3rd class passengers. Passengers having only one sibling, one spouse, one child or one parent had a higher survival rate than passengers having multiple family members. Passengers who embarked from Cherbourg have a higher survival rate than those from Southampton. 
+
+```{r}
+# (Sex, Parch)
+table(train$Sex,train$Parch)
+# (Sex, SibSp)
+table(train$Sex,train$SibSp)
+# (Sex, Embarked)
+table(train$Sex,train$Embarked)
+# (Sex, Pclass)
+table(train$Sex,train$Pclass)
+```
+
+There are 577 male passengers (0.65) and 314 female passengers (0.35) in `train`. More male passengers traveled independently than female passengers. More male passengers (0.76) embarked from Southampton than female passengers (0.64). There were more female passengers in the first class (0.30) than male passengers (0.21) and more male passengers (0.60) in the third class than the female passengers (0.45).
+
+```{r}
+# (Pclass, Embarked)
+table(train$Pclass,train$Embarked)
+# (Pclass, SibSp)
+table(train$Pclass,train$SibSp)
+# (SibSp, Parch)
+table(train$SibSp,train$Parch)
+```
+
+Majority of the people embarked from Southampton. Half of the passengers who embarked from Cherbourg were in the first class. Over 90% of the passengers from Queenstown were in the third class.  
+
+**Numerical (`Age`, `Fare`) vs Categorical (`Pclass`, `Sex`, `SibSp`, `Parch`, `Embarked`)**
+
+```{r, fig.width=7.5, fig.height=10}
+b1 <- ggplot(aes(x=as.factor(Pclass), y=Age), data=na.omit(train)) + geom_boxplot(alpha=0.25, fill='blue', color='blue') +  xlab("Pclass")
+b2 <- ggplot(aes(x=Sex, y=Age), data=na.omit(train)) + geom_boxplot(alpha=0.25, fill='blue', color='blue') +  xlab("Sex")
+b3 <- ggplot(aes(x=as.factor(SibSp), y=Age), data=na.omit(train)) + geom_boxplot(alpha=0.25, fill='blue', color='blue') +  xlab("SibSp")
+b4 <- ggplot(aes(x=as.factor(Parch), y=Age), data=na.omit(train)) + geom_boxplot(alpha=0.25, fill='blue', color='blue') +  xlab("Parch")
+b5 <- ggplot(aes(x=as.factor(Embarked), y=Age), data=na.omit(train)) + geom_boxplot(data=subset(na.omit(train), Embarked!=''), alpha=0.25, fill='blue', color='blue') +  xlab("Embarked")
+grid.arrange(
+  b1, b2, b3, b4, b5,
+  nrow = 3,
+  bottom = textGrob(
+    "",
+    gp = gpar(fontface = 3, fontsize = 9),
+    hjust = 1,
+    x = 1
+  )
+)
+```
+
+The median `Age` of the passengers increases as the level of class increases.
+
+```{r, fig.width=7.5, fig.height=10}
+# Exclude Fare > 500 
+b1 <- ggplot(aes(x=as.factor(Pclass), y=Fare), data=na.omit(train)) + geom_boxplot(data=subset(na.omit(train), Fare<500), alpha=0.25, fill='blue', color='blue') +  xlab("Pclass")
+b2 <- ggplot(aes(x=Sex, y=Fare), data=na.omit(train)) + geom_boxplot(data=subset(na.omit(train), Fare<500), alpha=0.25, fill='blue', color='blue') +  xlab("Sex")
+b3 <- ggplot(aes(x=as.factor(SibSp), y=Fare), data=na.omit(train)) + geom_boxplot(data=subset(na.omit(train), Fare<500), alpha=0.25, fill='blue', color='blue') +  xlab("SibSp")
+b4 <- ggplot(aes(x=as.factor(Parch), y=Fare), data=na.omit(train)) + geom_boxplot(data=subset(na.omit(train), Fare<500), alpha=0.25, fill='blue', color='blue') +  xlab("Parch")
+b5 <- ggplot(aes(x=as.factor(Embarked), y=Fare), data=na.omit(train)) + geom_boxplot(data=subset(na.omit(train), Embarked!='' & Fare<500), alpha=0.25, fill='blue', color='blue') +  xlab("Embarked")
+grid.arrange(
+  b1, b2, b3, b4, b5,
+  nrow = 3,
+  bottom = textGrob(
+    "",
+    gp = gpar(fontface = 3, fontsize = 9),
+    hjust = 1,
+    x = 1
+  )
+)
+```
+
+# Feature Engineering
+## Transformation
+
+```{r}
+str(all)
+```
+
+**`Name`**
+
+We split into `FirstName`, `LastName`, `Title`.
+
+```{r}
+library(stringr)
+all$LastName <- str_split_fixed(all$Name, ",", 2)[,1]
+tmp <- str_split_fixed(all$Name, ",", 2)[,2]
+all$Title <- trimws(str_split_fixed(tmp, "\\.", 2)[,1])
+all$FirstName <- str_split_fixed(tmp, "\\.", 2)[,2]
+```
+
+We assigned value `Special` to all `Title` values that are not in (Mr, Miss, Mrs). We further drop the columns `Name`, `FirstName` and `LastName`.
+
+```{r}
+all %>% group_by(Title) %>% dplyr::summarise(n=n()) %>% arrange(desc(n))
+all$Title[!(all$Title %in% c('Mr', 'Miss', 'Mrs'))] <- 'Special'
+all$Title <- as.factor(all$Title)
+```
+
+```{r}
+mosaicplot(~all$Survived+all$Title, data=na.omit(all), shade=TRUE, legend=TRUE, xlab='Survived', ylab='Title', main='')
+```
+
+**`Ticket`**
+
+We extract only alphabet characters from this column.
+
+```{r}
+all$TicketLetters <- sub("^([[:alpha:]]*).*", "\\1", all$Ticket)
+all$TicketLetters[all$TicketLetters == ''] <- 'None'
+all$TicketLetters[(all$TicketLetters %in% c('LINE', 'PP', 'AQ', 'P', 'WE', 'Fa', 'LP', 'SCO', 'SO', 'SW'))] <- 'Others'
+all %>% dplyr::group_by(TicketLetters) %>% dplyr::summarise(n=n()) %>% arrange(desc(n))
+all$TicketLetters <- as.factor(all$TicketLetters)
+```
+
+```{r}
+mosaicplot(~all$Survived+all$TicketLetters, data=na.omit(all), shade=TRUE, legend=TRUE, xlab='Survived', ylab='TicketLetters', main='')
+```
+
+**`Cabin`**
+
+We create a new attribute `CabinClass` with the first alphabet character stored in this column
+
+```{r}
+all$CabinClass <- sub("^([[:alpha:]]*).*", "\\1", all$Cabin)
+all$CabinClass[all$CabinClass == ''] <- 'None'
+all$CabinClass[(all$CabinClass %in% c('T','G'))] <- 'None'
+all %>% dplyr::group_by(CabinClass) %>% dplyr::summarise(n=n()) %>% arrange(desc(n))
+all$CabinClass <- as.factor(all$CabinClass)
+all <- all %>% dplyr::select(-Cabin)
+mosaicplot(~all$Survived+all$CabinClass, data=na.omit(all), shade=TRUE, legend=TRUE, xlab='Survived', ylab='CabinClass', main='')
+```
+
+**`FamSizeBinned`**
+
+```{r}
+all <- all %>% mutate(FamSize = as.numeric(as.character(SibSp)) + as.numeric(as.character(Parch)) + 1)
+famsize_df <- all %>% filter(!is.na(Survived))
+ggplot(famsize_df, aes(x=FamSize, fill=as.factor(Survived))) + geom_bar(stat='count', position='dodge', alpha=0.5) + scale_x_continuous(breaks=c(1:11)) + labs(x='Family Size') + theme_grey() + scale_fill_manual(name="group", values=c("red", "blue"),labels=c("Died", "Survived"))
+```
+
+```{r}
+all$FamSizeBinned[all$FamSize == 1] <- 'Solo'
+all$FamSizeBinned[1 < all$FamSize & all$FamSize <= 4] <- 'Small'
+all$FamSizeBinned[4 < all$FamSize] <- 'Large'
+all$FamSizeBinned <- as.factor(all$FamSizeBinned)
+mosaicplot(~all$Survived+all$FamSizeBinned, data=na.omit(all), shade=TRUE, legend=TRUE, xlab='Survived', ylab='FamSizeBinned', main='')
+```
+
+**`FamGroup`**
+
+```{r}
+all$FamGroup <- paste(as.character(all$FamSize), all$LastName, sep="")
+all$FamGroup[all$FamSize <= 2] <- 'Small'
+all$FamGroup <- as.factor(all$FamGroup)
+```
+
+**Drop some variables**
+
+```{r}
+all <- all %>% dplyr::select(-Name, -FirstName, -LastName, -FamSize, -SibSp, -Parch, -Ticket)
+str(all)
+```
+
+# Preprocess
+
+## Outliers
+
+## Normalization
+
+We normalize (scale and center) the two continuous variables: `Age` and `Fare`.
+
+```{r}
+library(caret)
+preProc <- preProcess(all[,-(1:2)], method=c("center", "scale"))
+preProc
+all <- predict(preProc, all)
+```
+
+## Encoding
+
+We take one-hot encoding of the factor variables.
+
+```{r}
+str(all)
+
+# Drop levels with no entries
+all <- droplevels(all)
+
+# One-hot encoding using model.matrix()
+#all <- as.data.frame(model.matrix( ~ . -1, all))
+
+# Standarize weird column names
+colnames(all) <- make.names(colnames(all))
+```
+
+## Cleaning
+
+We drop factor levels with near zero variance.
+
+```{r}
+# Remove variables with zero (near zero) variance
+drop_zerovar <- nearZeroVar(all)
+colnames(all[, c(drop_zerovar)])
+if (length(colnames(all[, c(drop_zerovar)]))!=0) {
+  all <- all[, -c(drop_zerovar)]
+}
+```
+
+Drop variables that are perfectly collinear with other variables.
+
+```{r}
+# Remove perfectly collinear columns
+drop_collinear <- c(rownames(alias(lm(PassengerId ~ . , data=all))$Complete))
+drop_collinear
+all <- all %>% dplyr::select(-all_of(drop_collinear))
+```
+
+# Feature Importance
+
+We use random forest with 100 trees to quickly evaluate the important features.
+
+```{r, fig.width=5, fig.height=5}
+# Run a quick random forest with 100 trees to find important features
+library(randomForest)
+rf_df <- all %>% filter(!is.na(Survived))
+set.seed(1)
+model_rf <- randomForest(as.factor(Survived) ~ . -PassengerId -FamGroup, data=rf_df, ntree=100, importance=TRUE)
+imp_RF <- importance(model_rf)
+imp_DF <- data.frame(Variables=row.names(imp_RF), MDA=imp_RF[,1])
+imp_DF <- imp_DF[order(imp_DF$MDA, decreasing=TRUE),]
+imp_var <- c(imp_DF[,'Variables'])
+ggplot(imp_DF, aes(x=reorder(Variables, MDA), y=MDA, fill=MDA)) + geom_bar(stat='identity') + labs(x='', y='% decrease in Accuracy if variable values are randomely shuffled (permuted)') + coord_flip() + theme(legend.position="none")
+```
+
+```{r}
+# We drop features with negative importance
+important_features <- imp_DF %>% filter(MDA>0) %>% rownames()
+important_features
+all <- all %>% dplyr::select(PassengerId, Survived, all_of(important_features), FamGroup)
+```
+
+# Modeling
+
+```{r}
+train <- all %>% filter(!is.na(Survived))
+test <- all %>% filter(is.na(Survived))
+```
+
+## Linear / Quadratic Discrimnant Analysis
+
+LDA uses continuous independent variables and a categorical dependent variable. It tries to find a linear hyperplane that maximizes the ratio between the within class variance and the inter class variance. Following are the fundamental assumptions of LDA (from wiki):
+
+  1. **multivariate normality**: independent variables are distributed normally for each level of the grouping variable.
+  2. **homogeneity of variance / covariance (homoscedasticity)**: variances among group variables are the same across levels of predictors. This can be tested with **Box's M** statistic. **Linear discriminant analysis** are typically used when the covariances are equal and **quadratic discriminant analysis** when covariances are not equal.
+  3. **multicollinearity**: predictive power can decrease with an increased correlation between predictor variables.
+  4. **independence**: observations are assumed to be randomly sampled, and a participant's score on one variable is assumed to be independent of scores on that variable for all other participants.
+
+```{r}
+# Linear Discriminant Analysis
+#library(pROC)
+#model.lda <- lda(as.factor(Survived) ~ . -PassengerId, data=train)
+#pred.lda <- predict(model.lda, train)
+#confusionMatrix(pred.lda$class, as.factor(train$Survived))
+#plot(model.lda)
+#roc.lda <- roc(response=train$Survived, predictor=pred.lda$posterior[,1])
+#par(pty="s")
+#plot(roc.lda)
+#auc(roc.lda)
+```
+
+We run **Box's M** test to evaluate if the second assumption above is met.
+
+```{r}
+# Box's M-Test for homogeneity of covariance matrices obtained from multivariate normal data according to one or more classification factors
+#library(biotools)
+#as.numeric(ncol(train)-2)
+#boxM(train[,3:as.numeric(ncol(train)-2)], train[,2])
+```
+
+The null hypothesis for this test is that the observed covariance matrices for the dependent variables are equal across groups. The test result with a small p-value indicates that the covariances are not equal. We run quadratic discriminant analysis.
+
+```{r}
+# Quadratic Discriminant Analysis (removing `TitleSpecial` because it causes a rank deficiency problem...)
+#model.qda <- qda(as.factor(Survived) ~ . -PassengerId, data=train)
+#pred.qda <- predict(model.qda, train)
+#confusionMatrix(pred.qda$class, as.factor(train$Survived))
+#roc.qda <- roc(response=train$Survived, predictor=pred.qda$posterior[,1])
+#par(pty="s")
+#plot(roc.qda)
+#auc(roc.qda)
+```
+
+```{r}
+#test$Survived <- predict(model.lda, test)$class
+#submission.lda <- test %>% dplyr::select(PassengerId, Survived)
+#write.csv(submission.lda,"submission_lda.csv", row.names=FALSE) # 0.78947
+
+#test$Survived <- predict(model.qda, test)$class
+#submission.qda <- test %>% dplyr::select(PassengerId, Survived)
+#write.csv(submission.qda,"submission_qda.csv", row.names=FALSE) # 0.73205
+```
+
+## Logistic Regressions (Generalized Linear Model)
+
+We try various logistic regression models with `caret` to choose the optimal hyperparameter using cross validation. We start with a **simple logistic regression**.
+
+```{r}
+model.logistic <- glm(as.factor(Survived) ~ . -PassengerId, data=train, family=binomial)
+prob.logistic <- predict(model.logistic, train, type="response")
+class.logistic <- rep("0", dim(train)[1])
+class.logistic[prob.logistic > .5] = "1"
+confusionMatrix(as.factor(class.logistic), as.factor(train$Survived))
+roc.logistic <- roc(response=train$Survived, predictor=prob.logistic)
+par(pty="s")
+plot(roc.logistic)
+auc(roc.logistic)
+```
+
+Next, we use **elastic net** logistic regression with penalty both on L1 and L2 norm.
+
+```{r}
+## Set training control for model building
+set.seed(1)
+ctrl <- trainControl(method="repeatedcv", number=5, repeats=10, summaryFunction=twoClassSummary, classProbs=TRUE, savePredictions=TRUE, search="random")
+model.elastic <- train(make.names(as.factor(Survived)) ~ . -PassengerId, data=train, method="glmnet", family="binomial", metric="ROC", trControl=ctrl, Length=10)
+model.elastic$bestTune
+```
+
+```{r}
+class.elastic <- predict(model.elastic, train, type='raw')
+confusionMatrix(as.factor(class.elastic), as.factor(make.names(train$Survived)))
+prob.elastic <- predict(model.elastic, train, type='prob')[,1]
+roc.elastic <- roc(response=train$Survived, predictor=prob.elastic)
+par(pty="s")
+plot(roc.elastic)
+auc(roc.elastic)
+```
+
+Lastly, we use **kernel logistic regression** (package dependency problem unresolved).
+
+```{r}
+#library(mixOmics)
+#library(mixKernel)
+#K <- compute.kernel(train[, 3:19], kernel.func="gaussian.radial.basis")
+#gelnet.klr(K, train$Survived, lambda=0.3764085, max.iter=100, eps=1e-05, v.init=rep(0,nrow(K)), b.init=0.5, silent=FALSE)
+```
+
+We make a prediction using the simple logistic regression model as it produces the highest `auc` as the cross validation score. 
+
+```{r}
+#test$Survived <- predict(model.logistic, test)
+#test$Survived[test$Survived >  0.5] <- 1
+#test$Survived[test$Survived <= 0.5] <- 0
+#submission.logistic <- test %>% dplyr::select(PassengerId, Survived)
+#write.csv(submission.logistic,"submission_logistic.csv", row.names=FALSE) # 0.77511
+```
+
+## KNN (Nonparametric Model)
+
+```{r}
+library(class)
+trControl <- trainControl(method="cv", number=10)
+model.knn <- train(as.factor(Survived) ~ . -PassengerId, data=train, method="knn", tuneGrid=expand.grid(k=1:10), trControl=trControl, metric="Accuracy")
+model.knn$bestTune
+class.knn <- predict(model.knn, train, type='raw')
+confusionMatrix(as.factor(class.knn), as.factor(train$Survived))
+prob.knn <- predict(model.knn, train, type='prob')[,1]
+roc.knn <- roc(response=train$Survived, predictor=prob.knn)
+par(pty="s")
+plot(roc.knn)
+auc(roc.knn)
+```
+
+```{r}
+test$Survived <- predict(model.knn, test, type='raw')
+submission.knn <- test %>% dplyr::select(PassengerId, Survived)
+write.csv(submission.knn,"submission_knn.csv", row.names=FALSE) # 0.72727
+```
+
+## (Logistic) Generalized Additive Model 
+
+GAMs fit multiple basis functions to the observation to capture nonlinear relationships. GAMs require more data than linear models, but could be more powerful because of their flexibility, which in turn could become a risk of over-fitting. 
+
+```{r, message=FALSE, warning=FALSE}
+library(mgcv)
+# Remove 'TitleSpecial' because it causes a problem...
+#model.gam <- gam(as.factor(Survived) ~ s(Age) + s(Fare) + Sexmale + Pclass1 + Pclass2 + SibSp1 + Parch2 + EmbarkedQ + EmbarkedS + TitleMr + TitleMrs + TicketLettersNone + TicketLettersPC + CabinClassC + CabinClassNone, data=train, family=binomial, method="REML")
+
+model.gam <- gam(as.factor(Survived) ~ s(Age) + s(Fare) + Sex + Pclass + Embarked + Title + TicketLetters + CabinClass + FamSizeBinned + FamGroup, data=train, family=binomial, method="REML")
+```
+
+```{r}
+prob.gam <- predict(model.gam, train, type="response")
+class.gam <- rep("0", dim(train)[1])
+class.gam[prob.gam > .5] = "1"
+confusionMatrix(as.factor(class.gam), as.factor(train$Survived))
+roc.gam <- roc(response=train$Survived, predictor=prob.gam)
+par(pty="s")
+plot(roc.gam)
+auc(roc.gam)
+```
+
+```{r}
+#test$Survived <- predict(model.gam, test)
+#test$Survived[test$Survived >  0.5] <- 1
+#test$Survived[test$Survived <= 0.5] <- 0
+#submission.gam <- test %>% dplyr::select(PassengerId, Survived)
+#write.csv(submission.gam,"submission_gam.csv", row.names=FALSE) # 0.77511
+```
+
+## Support Vector Machine
+
+We use `caret` to find the optimal parameters (**gamma** and **cost**) for our support vector machine. **Gamma** is the free parameter of the Gaussian radial basis function. A smaller **gamma** means a Gaussian with a larger variance. **Cost** is the parameter for the soft margin cost function and it controls the cost of mis-classification. A smaller **cost** makes the cost of mis-classificaiton low: softer margin.
+
+```{r, fig.width=7, fig.height=3.5, message=FALSE, warning=TRUE}
+library(e1071)
+set.seed(1)
+model.svm <- tune(svm, as.factor(Survived) ~ . -PassengerId, data=train, ranges=list(gamma=2^(-5:0), cost=seq(1.0,1.5,0.1)), kernel="radial", probability=TRUE)
+print(model.svm)
+plot(model.svm)
+```
+
+```{r}
+class.svm <- predict(model.svm$best.model, train)
+pred.svm <- predict(model.svm$best.model, train, probability=TRUE)
+prob.svm <- attr(pred.svm, "probabilities")[,1]
+confusionMatrix(as.factor(pred.svm), as.factor(train$Survived))
+roc.svm <- roc(response=train$Survived, predictor=prob.svm)
+par(pty="s")
+plot(roc.svm)
+auc(roc.svm)
+```
+
+```{r}
+test$Survived <- predict(model.svm$best.model, test)
+submission.svm <- test %>% dplyr::select(PassengerId, Survived)
+write.csv(submission.svm,"submission_svm.csv", row.names=FALSE) # 0.75119
+```
+
+## Naive Bayes Classifier
+
+The fundamental Naive Bayes assumption is that each feature makes an independent and equal contribution to the outcome.
+
+```{r, warning=FALSE}
+library(klaR)
+#set.seed(1)
+#trControl <- trainControl(method="cv", number=5, classProbs=TRUE)
+#model.nb <- train(make.names(as.factor(Survived)) ~ . -PassengerId, train, method="nb", trControl=trControl)
+#pred.nb <- predict(model.nb, train)
+```
+
+The above warnings mean that some observations fall outside of the distribution and therefore won't be used to train the model (https://stackoverflow.com/questions/32728344/warnings-while-using-the-naive-bayes-classifier-in-the-caret-package).
+
+```{r, warning=FALSE}
+#class.nb <- predict(model.nb, train, type='raw')
+#confusionMatrix(as.factor(class.nb), as.factor(make.names(train$Survived)))
+#prob.nb <- predict(model.nb, train, type='prob')[,1]
+#roc.nb <- roc(response=train$Survived, predictor=prob.nb)
+#par(pty="s")
+#plot(roc.nb)
+#auc(roc.nb)
+```
+
+```{r, warning=FALSE}
+#test$Survived <- as.character(test$Survived)
+#test$Survived <- as.character(predict(model.nb, test))
+#test$Survived[test$Survived == 'X0'] <- 0
+#test$Survived[test$Survived == 'X1'] <- 1
+#submission.nb <- test %>% dplyr::select(PassengerId, Survived)
+#write.csv(submission.nb,"submission_nb.csv", row.names=FALSE) # 0.71531
+```
+
+## Decision Tree
+
+The criteria for a making (or not) a new split in a decision tree is to compare the decrease in the error of the tree with the new split against the **complexity parameter (cp)** times the number of leaves it would yield. If the former is greater, then the split is made.
+
+
+```{r}
+library(rpart)
+library(rpart.plot)
+set.seed(1)
+
+model.tree <- train(as.factor(Survived) ~ . -PassengerId, data=train, method="rpart", trControl=trainControl("cv", number=10), tuneLength=20)
+
+# Plot model error vs different values of complexity parameter
+plot(model.tree)
+# Print the best tuning parameter cp that minimize the model Accuracy
+model.tree$bestTune
+# Plot the final tree model
+rpart.plot(model.tree$finalModel)
+# Decision rules in the model
+model.tree$finalModel
+
+prob.tree <- predict(model.tree, newdata=train, type='prob')[,1]
+class.tree <- rep("1", dim(train)[1])
+class.tree[prob.tree > .5] = "0"
+
+confusionMatrix(as.factor(class.tree), as.factor(train$Survived))
+roc.tree <- roc(response=train$Survived, predictor=prob.tree)
+par(pty="s")
+plot(roc.tree)
+auc(roc.tree)
+```
+
+```{r}
+test$Survived_ <- predict(model.tree, newdata=test, type='prob')[,1]
+test$Survived[test$Survived_ >  0.5] <- 0
+test$Survived[test$Survived_ <= 0.5] <- 1
+submission.tree <- test %>% dplyr::select(PassengerId, Survived)
+write.csv(submission.tree,"submission_tree.csv", row.names=FALSE) # 0.73684
+```
+
+## Random Forest
+
+Here, we use 5-fold cross validation. **mtry** is the number of variables randomly sampled as candidates at each split.
+
+```{r}
+library(randomForest)
+set.seed(5)
+control <- trainControl(method="cv", number=5)
+model.rf <- train(as.factor(Survived) ~ . -PassengerId, data=train, method="rf", trControl=control, tuneGrid=expand.grid(mtry=2:5))
+model.rf$bestTune
+prob.rf <- predict(model.rf, train, type='prob')[,1]
+class.rf <- rep("1", dim(train)[1])
+class.rf[prob.rf > .5] = "0"
+confusionMatrix(as.factor(class.rf), as.factor(train$Survived))
+roc.rf <- roc(response=train$Survived, predictor=prob.rf)
+par(pty="s")
+plot(roc.rf)
+auc(roc.rf)
+```
+
+We now use a **forest of conditional inference trees**. They make their decisions in slightly different ways, using a statistical test rather than a purity measure, but the basic construction of each tree is fairly similar.
+
+```{r}
+library(party)
+set.seed(1)
+control <- trainControl(method="cv", number=5, classProbs=TRUE, summaryFunction=twoClassSummary)
+model.cforest <- train(make.names(as.factor(Survived)) ~ . -PassengerId, data=train, method="cforest", metric="ROC", trControl=control, tuneGrid=expand.grid(mtry=2:5))
+model.cforest$bestTune
+prob.cforest <- predict(model.cforest, train, type='prob')[,1]
+class.cforest <- rep("1", dim(train)[1])
+class.cforest[prob.cforest > .5] = "0"
+confusionMatrix(as.factor(class.cforest), as.factor(train$Survived))
+roc.cforest <- roc(response=train$Survived, predictor=prob.cforest)
+par(pty="s")
+plot(roc.cforest)
+auc(roc.cforest)
+```
+
+```{r}
+test$Survived <- predict(model.rf, test)
+submission.rf <- test %>% dplyr::select(PassengerId, Survived)
+write.csv(submission.rf,"submission_rf.csv", row.names=FALSE) # 0.77272
+
+test$Survived_ <- predict(model.cforest, test, type='prob')[,1]
+test$Survived[test$Survived_ >  0.5] <- 0
+test$Survived[test$Survived_ <= 0.5] <- 1
+submission.cforest <- test %>% dplyr::select(PassengerId, Survived)
+write.csv(submission.cforest,"submission_cforest.csv", row.names=FALSE)
+```
+
+We extract feature importance.
+
+```{r}
+# Extracting variable importance and make graph with ggplot (looks nicer that the standard varImpPlot)
+rf_imp <- varImp(model.rf, scale = FALSE)
+rf_imp <- rf_imp$importance
+rf_gini <- data.frame(Variables=row.names(rf_imp), MeanDecreaseGini=rf_imp$Overall)
+ggplot(top_n(rf_gini, 20, MeanDecreaseGini), aes(x=reorder(Variables, MeanDecreaseGini), y=MeanDecreaseGini, fill=MeanDecreaseGini)) +
+        geom_bar(stat='identity') + coord_flip() + theme(legend.position="none") + labs(x="") +
+        ggtitle('Variable Importance Random Forest') + theme(plot.title = element_text(hjust = 0.5))
+```
+
+## XGBoost
+
+```{r}
+library(gbm)
+set.seed(1)
+control <- trainControl(method="cv", number=5)
+model.gbm <- train(as.factor(Survived) ~ . -PassengerId, data=train, method='gbm', trControl=control, verbose=FALSE)
+prob.gbm <- predict(model.gbm, train, type='prob')[,1]
+class.gbm <- rep("1", dim(train)[1])
+class.gbm[prob.gbm > .5] = "0"
+confusionMatrix(as.factor(class.gbm), as.factor(train$Survived))
+roc.gbm <- roc(response=train$Survived, predictor=prob.gbm)
+par(pty="s")
+plot(roc.gbm)
+auc(roc.gbm)
+```
+
+```{r}
+test$Survived_ <- predict(model.gbm, test, type='prob')[,1]
+test$Survived[test$Survived_ >  0.5] <- 0
+test$Survived[test$Survived_ <= 0.5] <- 1
+submission.gbm <- test %>% dplyr::select(PassengerId, Survived)
+write.csv(submission.gbm,"submission_gbm.csv", row.names=FALSE) # 
+```
+
+## Neural Network
+
+We use `caret`'s method `nnet` to run a 5-fold cross validation to find the best number of nodes and weight decay factor.
+
+```{r}
+library(neuralnet)
+#http://sebastianderi.com/aexam/hld_MODEL_neural.html
+
+set.seed(1)
+
+# Step 1: SELECT TUNING PARAMETERS
+# Set range of tuning parameters (layer size [number of nodes] and weight decay)
+tune_grid_neural <- expand.grid(size=c(1:5), decay=c(0, 0.05, 0.1, 0.5, 1))
+
+# Set other constrains to be imposed on network (to keep computation manageable)
+max_size_neaural <- max(tune_grid_neural$size)
+max_weights_neural <- max_size_neaural*(nrow(train) + 1) + max_size_neaural + 1
+
+# Step 2: SELECT TUNING METHOD
+# set up train control object, which specifies training/testing technique
+control_neural <- trainControl(method="cv", number=5)
+
+# Step 3: TRAIN MODEL
+model.nn <- train(as.factor(Survived) ~ . -PassengerId, data=train, method="nnet", tuneGrid=tune_grid_neural, trControl=control_neural, trace=FALSE)
+```
+
+```{r}
+prob.nn <- predict(model.nn, train, type='prob')[,1]
+class.nn <- rep("1", dim(train)[1])
+class.nn[prob.nn > .5] = "0"
+confusionMatrix(as.factor(class.nn), as.factor(train$Survived))
+roc.nn <- roc(response=train$Survived, predictor=prob.nn)
+par(pty="s")
+plot(roc.nn)
+auc(roc.nn)
+```
+
+```{r}
+test$Survived_ <- predict(model.nn, test, type='prob')[,1]
+test$Survived[test$Survived_ >  0.5] <- 0
+test$Survived[test$Survived_ <= 0.5] <- 1
+submission.nn <- test %>% dplyr::select(PassengerId, Survived)
+write.csv(submission.nn,"submission_nn.csv", row.names=FALSE) # 0.77272
+```
+
+## Combine Models
+
+```{r}
+#compose correlations plot
+library(corrplot)
+
+#results <- as.data.frame(submission.lda[,1:2])
+#results$qda <- submission.qda[,2]
+#results$logistic <- submission.logistic[,2]
+results <- as.data.frame(submission.knn[,1:2])
+names(results)[1] <- 'PassengerId'
+names(results)[2] <- 'knn'
+#results$gam <- submission.gam[,2]
+results$svm <- submission.svm[,2]
+#results$nb <- submission.nb[,2]
+results$tree <- submission.tree[,2]
+results$rf <- submission.rf[,2]
+results$gbm <- submission.gbm[,2]
+results$nn <- submission.nn[,2]
+
+#results$lda <- as.numeric(as.character(results$lda))
+#results$qda <- as.numeric(as.character(results$qda))
+results$knn <- as.numeric(as.character(results$knn))
+results$svm <- as.numeric(as.character(results$svm))
+#results$nb <- as.numeric(results$nb)
+results$tree <- as.numeric(results$tree)
+results$rf <- as.numeric(as.character(results$rf))
+results$gbm <- as.numeric(as.character(results$gbm))
+results$nn <- as.numeric(as.character(results$nn))
+
+corrplot.mixed(cor(results[, c('knn', 'svm', 'tree', 'rf', 'gbm', 'nn')]), order="hclust", tl.col="black")
+```
+
+```{r}
+results <- results %>% mutate_if(is.numeric, ~replace(., is.na(.), 0))
+results <- transform(results, majority=ifelse(svm+rf+gbm > 1, 1, 0))
+submission.majority <- results %>% dplyr::select(PassengerId, majority)
+names(submission.majority)[2] <- 'Survived'
+write.csv(submission.majority,"submission_majority.csv", row.names=FALSE)
+```
+
+We take the LDA predictions unless both svm and gbm disagree with the rf prediction.
+
+```{r}
+submission.disagree.lda <- results %>% dplyr::select(PassengerId, svm, rf, gbm)
+submission.disagree.lda$Survived <- ifelse(results$svm==results$gbm & results$rf!=results$svm, results$svm, results$rf)
+submission.disagree.lda <- submission.disagree.lda %>% dplyr::select(PassengerId, Survived)
+write.csv(submission.disagree.lda,"submission_disagree_rf.csv", row.names=FALSE)
+```
+
+To do:
+1. Use different imputation for missing `Age`: e.g. KNN.
+2. Use imputation for zero `Fare` (only 15 entries in train).
+3. Create `SharedTicket` flag variable (only 6 tickets in train).
+4. Create `IndependentPassenegr` flag variable.
+5. Use something similar to AIC or BIC to eliminate some variables
+6. Drop `Title` (drop `Name`)
+
